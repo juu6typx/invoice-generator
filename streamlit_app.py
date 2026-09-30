@@ -60,6 +60,22 @@ if st.button("Generate Invoice", type="primary"):
             if not c: c = [s for s in SP if s["text"].strip().startswith(text) and abs(s["origin"][1] - y) < dx]
             return c[0] if c else None
 
+        def split_row(y):
+            rs = [s for s in SP if abs(s["origin"][1] - y) < 3 and s["bbox"][0] > 250]
+            val = None; lab = []
+            for s in rs:
+                t = s["text"].strip()
+                if val is None and t and all(c in "0123456789.," for c in t):
+                    val = s
+                else:
+                    lab.append(s)
+            lr = max([s["bbox"][2] for s in lab], default=None)
+            vr = val["bbox"][2] if val else None
+            ref = lab[0] if lab else (val if val else None)
+            sz = ref["size"] if ref else 9
+            bd = ("Bold" in ref["font"]) if ref else False
+            return lr, vr, sz, bd
+
         def grey_extent(y0, y1):
             pix = page.get_pixmap(dpi=72, clip=fitz.Rect(0, y0, page.rect.width, y1))
             a = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, pix.n)[:, :, :3].mean(axis=2)
@@ -99,13 +115,13 @@ if st.button("Generate Invoice", type="primary"):
         replace_exact("26.03.2026", arr)
 
         row1 = find("26.03.26")
-        y_row1 = row1["origin"][1]; x_date = row1["origin"][0]
+        y_row1 = row1["origin"][1]; x_date = row1["origin"][0]; sz_row = row1["size"]
         x_desc = find("Accommodation")["origin"][0]
         mc = find("Mastercard"); y_mc = mc["origin"][1]
         row_h = y_mc - y_row1
         hdr = {l: find(l) for l in ("Description", "Qty.", "Charges", "Credit")}
         hdr["Date"] = min([s for s in SP if s["text"].strip() == "Date"], key=lambda s: abs(s["origin"][1] - (y_row1 - 10)))
-        y_hdr = hdr["Date"]["origin"][1]
+        y_hdr = hdr["Date"]["origin"][1]; sz_hdr = hdr["Date"]["size"]; bd_hdr = "Bold" in hdr["Date"]["font"]
 
         def span_at(text, y, dx=6):
             c = [s for s in SP if s["text"].strip() == text and abs(s["origin"][1] - y) < dx]
@@ -114,21 +130,24 @@ if st.button("Generate Invoice", type="primary"):
         qty_right = span_at("1", y_row1)["bbox"][2]
         charges_right = span_at("53.10", y_row1)["bbox"][2]
         credit_right = span_at("53.10", y_mc)["bbox"][2]
-        bal = find("Balance"); y_bal = bal["origin"][1]; x_bal = bal["origin"][0]
+        bal = find("Balance"); y_bal = bal["origin"][1]
         vb = find("VAT Breakdown"); y_vb = vb["origin"][1]; x_vb = vb["origin"][0]
+        sz_mini = vb["size"]; bd_mini = "Bold" in vb["font"]
         na_s = span_near("Net Amount", y_vb) or vb
         vat_s = span_near("VAT", y_vb) or vb
         x_na = na_s["origin"][0]; x_vat = vat_s["origin"][0]
         y_v20 = find("VAT 20%")["origin"][1]
         y_v4 = find("VAT 4%")["origin"][1]
-        vtot = find("TOTAL GBP")
-        y_vtot = vtot["origin"][1]
+        vtot = find("TOTAL GBP"); y_vtot = vtot["origin"][1]
         na_right = span_at("44.25", y_v20)["bbox"][2]
         vat_right = span_at("8.85", y_v20)["bbox"][2]
-        right_spans = sorted([s for s in SP if s["bbox"][0] > 300 and y_bal < s["origin"][1] < y_vb], key=lambda s: s["origin"][1])
-        y_tiv = right_spans[0]["origin"][1]
-        y_net = right_spans[-1]["origin"][1]
-        R = max(s["bbox"][2] for s in right_spans if abs(s["origin"][1] - y_tiv) < 3)
+        tot = find("Total"); sz_tot = tot["size"]; bd_tot = "Bold" in tot["font"]
+
+        lr_bal, vr_bal, sz_b, bd_b = split_row(y_bal)
+        y_tiv = min([s["origin"][1] for s in SP if s["bbox"][0] > 250 and y_bal + 4 < s["origin"][1] < y_vb])
+        y_net = max([s["origin"][1] for s in SP if s["bbox"][0] > 250 and y_bal + 4 < s["origin"][1] < y_vb])
+        lr_tiv, vr_tiv, _, _ = split_row(y_tiv)
+        lr_net, vr_net, _, _ = split_row(y_net)
 
         T_left, T_right = grey_extent(y_hdr - 1, y_hdr + 3)
         if T_left is None: T_left, T_right = x_date - 6, credit_right + 6
@@ -150,51 +169,55 @@ if st.button("Generate Invoice", type="primary"):
         page.draw_line((T_left, y - 9), (T_right, y - 9), color=(0, 0, 0), width=0.7)
         page.draw_line((T_left, y + 4), (T_right, y + 4), color=(0, 0, 0), width=0.7)
         for label in ("Date", "Description", "Qty.", "Charges", "Credit"):
-            draw(label, y, bold=True, x=hdr[label]["origin"][0], size=9)
+            draw(label, y, bold=bd_hdr, x=hdr[label]["origin"][0], size=sz_hdr)
         y += row_h
         for d in ROW_DATES:
-            draw(d, y, x=x_date, size=9)
-            draw("Accommodation", y, x=x_desc, size=9)
-            draw("1", y, right=qty_right, size=9)
-            draw(CHARGE, y, right=charges_right, size=9)
+            draw(d, y, x=x_date, size=sz_row)
+            draw("Accommodation", y, x=x_desc, size=sz_row)
+            draw("1", y, right=qty_right, size=sz_row)
+            draw(CHARGE, y, right=charges_right, size=sz_row)
             y += row_h
-        draw("Mastercard", y, x=x_desc, size=9)
-        draw("1", y, right=qty_right, size=9)
-        draw(CREDIT_TOTAL, y, right=credit_right, size=9)
+        draw("Mastercard", y, x=x_desc, size=sz_row)
+        draw("1", y, right=qty_right, size=sz_row)
+        draw(CREDIT_TOTAL, y, right=credit_right, size=sz_row)
         y += row_h * 0.8
-        draw("XXXXXXXXXXXX3724 XX/XX", y, x=x_desc, size=9)
+        draw("XXXXXXXXXXXX3724 XX/XX", y, x=x_desc, size=sz_row)
         y += row_h * 1.2
         y_totN = y
         page.draw_line((T_left, y_totN - 9), (T_right, y_totN - 9), color=(0, 0, 0), width=0.7)
         page.draw_rect(fitz.Rect(T_left, y_totN - 8, T_right, y_totN + 3), color=None, fill=grey)
         page.draw_line((T_left, y_totN + 4), (T_right, y_totN + 4), color=(0, 0, 0), width=0.7)
-        draw("Total", y_totN, bold=True, x=x_date, size=9)
-        draw(CREDIT_TOTAL, y_totN, bold=True, right=charges_right, size=9)
-        draw(CREDIT_TOTAL, y_totN, bold=True, right=credit_right, size=9)
+        draw("Total", y_totN, bold=bd_tot, x=x_date, size=sz_tot)
+        draw(CREDIT_TOTAL, y_totN, bold=bd_tot, right=charges_right, size=sz_tot)
+        draw(CREDIT_TOTAL, y_totN, bold=bd_tot, right=credit_right, size=sz_tot)
         y_totN += row_h
-        draw("Balance GBP 0.00", y_totN, x=x_bal, size=9)
+        draw("Balance GBP", y_totN, bold=bd_b, right=lr_bal, size=sz_b)
+        draw("0.00", y_totN, bold=bd_b, right=vr_bal, size=sz_b)
         delta = y_totN - y_bal
 
-        draw("Total Includin g VAT GBP " + CREDIT_TOTAL, y_tiv + delta, bold=True, right=R, size=9)
-        draw("Net Amount GBP " + NET_TOTAL, y_net + delta, bold=True, right=R, size=9)
+        draw("Total Includin g VAT GBP", y_tiv + delta, bold=bd_b, right=lr_tiv, size=sz_b)
+        draw(CREDIT_TOTAL, y_tiv + delta, bold=bd_b, right=vr_tiv, size=sz_b)
+        draw("Net Amount GBP", y_net + delta, bold=bd_b, right=lr_net, size=sz_b)
+        draw(NET_TOTAL, y_net + delta, bold=bd_b, right=vr_net, size=sz_b)
 
         yv = y_vb + delta
-        page.draw_rect(fitz.Rect(M_left, yv - 8, M_right, yv + 3), color=None, fill=grey)
-        draw("VAT Breakdown", yv, bold=True, x=x_vb, size=9)
-        draw("Net Amount", yv, bold=True, x=x_na, size=9)
-        draw("VAT", yv, bold=True, x=x_vat, size=9)
+        page.draw_rect(fitz.Rect(M_left, yv - 7, M_right, yv + 2), color=None, fill=grey)
+        draw("VAT Breakdown", yv, bold=bd_mini, x=x_vb, size=sz_mini)
+        draw("Net Amount", yv, bold=bd_mini, x=x_na, size=sz_mini)
+        draw("VAT", yv, bold=bd_mini, x=x_vat, size=sz_mini)
         yv = y_v20 + delta
-        draw("VAT 20%", yv, x=x_vb, size=9)
-        draw(NET_TOTAL, yv, right=na_right, size=9)
-        draw(VAT_20, yv, right=vat_right, size=9)
+        draw("VAT 20%", yv, bold=bd_mini, x=x_vb, size=sz_mini)
+        draw(NET_TOTAL, yv, bold=bd_mini, right=na_right, size=sz_mini)
+        draw(VAT_20, yv, bold=bd_mini, right=vat_right, size=sz_mini)
         yv = y_v4 + delta
-        draw("VAT 4%", yv, x=x_vb, size=9)
-        draw("0.00", yv, right=na_right, size=9)
-        draw("0.00", yv, right=vat_right, size=9)
+        draw("VAT 4%", yv, bold=bd_mini, x=x_vb, size=sz_mini)
+        draw("0.00", yv, bold=bd_mini, right=na_right, size=sz_mini)
+        draw("0.00", yv, bold=bd_mini, right=vat_right, size=sz_mini)
         yv = y_vtot + delta
-        page.draw_line((M_left, yv - 3), (M_right, yv - 3), color=(0, 0, 0), width=0.7)
-        draw("TOTAL GBP " + VAT_20, yv, bold=True, x=x_vb, size=9)
-        page.draw_line((M_left, yv + 3), (M_right, yv + 3), color=(0, 0, 0), width=0.7)
+        page.draw_line((M_left, yv - sz_mini - 1), (M_right, yv - sz_mini - 1), color=(0, 0, 0), width=0.7)
+        draw("TOTAL GBP", yv, bold=bd_mini, x=x_vb, size=sz_mini)
+        draw(VAT_20, yv, bold=bd_mini, right=vat_right, size=sz_mini)
+        page.draw_line((M_left, yv + 2), (M_right, yv + 2), color=(0, 0, 0), width=0.7)
 
         out_bytes = io.BytesIO()
         doc.save(out_bytes)
