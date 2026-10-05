@@ -16,8 +16,9 @@ a1 = c1.text_input("Address line 1", "438 Airpoint")
 a2 = c1.text_input("Address line 2", "Skypark Road")
 a3 = c1.text_input("Address line 3", "Bristol")
 a4 = c1.text_input("Address line 4", "BS3 3NL")
+ino = c2.text_input("Invoice No.", "26683")
 inv = c2.text_input("Invoice Date", "02.09.2026")
-arr = c2.text_input("Arrival", "27.08.2026")
+arr = c2.text_input("Arrival", "28.08.2026")
 dep = c2.text_input("Departure", "02.09.2026")
 chg = c2.text_input("Nightly Charge", "104.05")
 
@@ -30,7 +31,7 @@ if st.button("Generate Invoice", type="primary"):
         _a = datetime.strptime(arr, "%d.%m.%Y")
         _d = datetime.strptime(dep, "%d.%m.%Y")
         _nights = max((_d - _a).days, 1)
-        ROW_DATES = [(_a + timedelta(days=i)).strftime("%d.%m.%y") for i in range(1, _nights + 1)]
+        ROW_DATES = [(_a + timedelta(days=i)).strftime("%d.%m.%y") for i in range(_nights)]
         CHARGE = "%.2f" % CHARGE_F
         CREDIT_TOTAL = "%.2f" % (CHARGE_F * _nights)
         NET_TOTAL = "%.2f" % round(CHARGE_F * _nights / 1.2, 2)
@@ -39,6 +40,10 @@ if st.button("Generate Invoice", type="primary"):
         doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
         page = doc[0]
         SP = [s for b in page.get_text("dict")["blocks"] if b.get("type") == 0 for l in b["lines"] for s in l["spans"]]
+        RED = []
+
+        def kill(rect):
+            RED.append(fitz.Rect(rect))
 
         def draw(text, y, bold=False, x=None, right=None, size=9):
             fname = "hebo" if bold else "helv"
@@ -84,17 +89,15 @@ if st.button("Generate Invoice", type="primary"):
             if len(cols) == 0: return None, None
             return float(cols.min()), float(cols.max() + 1)
 
-        def replace_exact(old, new, **kw):
-            s = find(old, **kw)
+        def replace_exact(old, new):
+            s = find(old)
             if not s: return
-            r = fitz.Rect(s["bbox"])
-            page.draw_rect(r + (-1.5, -1.5, 1.5, 1.5), color=None, fill=(1, 1, 1))
+            kill(fitz.Rect(s["bbox"]) + (-1.5, -1.5, 1.5, 1.5))
             draw(new, s["origin"][1], bold=("Bold" in s["font"]), x=s["origin"][0], size=s["size"])
 
         for s in list(SP):
             if "Luke Moore" in s["text"] and "Guest" not in s["text"]:
-                r = fitz.Rect(s["bbox"])
-                page.draw_rect(r + (-1.5, -1.5, 1.5, 1.5), color=None, fill=(1, 1, 1))
+                kill(fitz.Rect(s["bbox"]) + (-1.5, -1.5, 1.5, 1.5))
                 draw(name, s["origin"][1], bold=("Bold" in s["font"]), x=s["origin"][0], size=s["size"])
 
         addr = find("airpoint") or find("skypark") or find("733")
@@ -104,15 +107,20 @@ if st.button("Generate Invoice", type="primary"):
             g = (brl["origin"][1] - addr["origin"][1]) if brl else 11.0
             x0 = addr["bbox"][0]
             x1 = max(addr["bbox"][2], brl["bbox"][2] if brl else 0, gb["bbox"][2] if gb else 0) + 2
-            page.draw_rect(fitz.Rect(x0 - 2, addr["origin"][1] - 10, x1, addr["origin"][1] + 3 * g + 4), color=None, fill=(1, 1, 1))
+            kill(fitz.Rect(x0 - 2, addr["origin"][1] - 10, x1, addr["origin"][1] + 3 * g + 4))
             draw(a1, addr["origin"][1], x=x0, size=addr["size"])
             draw(a2, addr["origin"][1] + g, x=x0, size=addr["size"])
             draw(a3, addr["origin"][1] + 2 * g, x=x0, size=addr["size"])
             draw(a4, addr["origin"][1] + 3 * g, x=x0, size=addr["size"])
 
-        replace_exact("27.03.2026", inv, x_min=300)
-        replace_exact("27.03.2026", dep, x_max=300)
-        replace_exact("26.03.2026", arr)
+        s_d = find("27.03.2026", x_min=300)
+        if s_d: kill(fitz.Rect(s_d["bbox"]) + (-1.5, -1.5, 1.5, 1.5)); draw(inv, s_d["origin"][1], x=s_d["origin"][0], size=s_d["size"])
+        s_dp = find("27.03.2026", x_max=300)
+        if s_dp: kill(fitz.Rect(s_dp["bbox"]) + (-1.5, -1.5, 1.5, 1.5)); draw(dep, s_dp["origin"][1], x=s_dp["origin"][0], size=s_dp["size"])
+        s_ar = find("26.03.2026")
+        if s_ar: kill(fitz.Rect(s_ar["bbox"]) + (-1.5, -1.5, 1.5, 1.5)); draw(arr, s_ar["origin"][1], x=s_ar["origin"][0], size=s_ar["size"])
+        s_in = find("26683")
+        if s_in and ino != "26683": kill(fitz.Rect(s_in["bbox"]) + (-1.5, -1.5, 1.5, 1.5)); draw(ino, s_in["origin"][1], x=s_in["origin"][0], size=s_in["size"])
 
         row1 = find("26.03.26")
         y_row1 = row1["origin"][1]; x_date = row1["origin"][0]; sz_row = row1["size"]
@@ -145,97 +153,4 @@ if st.button("Generate Invoice", type="primary"):
         tot = find("Total"); sz_tot = tot["size"]; bd_tot = "Bold" in tot["font"]
 
         lr_bal, vr_bal, sz_b, bd_b = split_row(y_bal)
-        ys_sub = [s["origin"][1] for s in SP if s["bbox"][0] > 250 and y_bal + 4 < s["origin"][1] < y_vb]
-        y_tiv = min(ys_sub); y_net = max(ys_sub)
-        lr_tiv, vr_tiv, _, _ = split_row(y_tiv)
-        lr_net, vr_net, _, _ = split_row(y_net)
-
-        T_left, T_right = grey_extent(y_hdr - 1, y_hdr + 3)
-        if T_left is None: T_left, T_right = x_date - 6, credit_right + 6
-        M_left, M_right = grey_extent(y_vb - 7, y_vb - 4)
-        if M_left is None: M_left, M_right = x_vb - 6, vat_right + 6
-
-        dmini = RE - vat_right
-        x_vb2 = x_vb + dmini
-        x_na2 = x_na + dmini
-        na_right2 = na_right + dmini
-        vat_right2 = RE
-        M_left2 = x_vb2 - (x_vb - M_left)
-        M_right2 = RE + 15
-        lb_bal = (lr_bal if lr_bal else RE - 46) + (RE - (vr_bal or RE))
-        lb_tiv = (lr_tiv if lr_tiv else RE - 46) + (RE - (vr_tiv or RE))
-        lb_net = (lr_net if lr_net else RE - 46) + (RE - (vr_net or RE))
-
-        pix = page.get_pixmap(dpi=72, clip=fitz.Rect(x_vb, y_vb - 6, x_vb + 6, y_vb - 4))
-        arrpx = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, pix.n)[:, :, :3]
-        med = np.median(arrpx.reshape(-1, 3), axis=0) / 255.0
-        grey = tuple(round(float(v), 3) for v in med)
-        gsp = [s for s in SP if "The hotel," in s["text"]]
-        gdpr_top = gsp[0]["bbox"][1] if gsp else 10 ** 4
-        bottom = min(y_vtot + 8, gdpr_top - 4)
-
-        page.draw_rect(fitz.Rect(0, y_hdr - 12, page.rect.width, bottom), color=None, fill=(1, 1, 1))
-
-        y = y_hdr
-        page.draw_rect(fitz.Rect(T_left, y - 8, T_right, y + 3), color=None, fill=grey)
-        page.draw_line((T_left, y - 9), (T_right, y - 9), color=(0, 0, 0), width=0.7)
-        page.draw_line((T_left, y + 4), (T_right, y + 4), color=(0, 0, 0), width=0.7)
-        for label in ("Date", "Description", "Qty.", "Charges", "Credit"):
-            draw(label, y, bold=bd_hdr, x=hdr[label]["origin"][0], size=sz_hdr)
-        y += row_h
-        for d in ROW_DATES:
-            draw(d, y, x=x_date, size=sz_row)
-            draw("Accommodation", y, x=x_desc, size=sz_row)
-            draw("1", y, right=qty_right, size=sz_row)
-            draw(CHARGE, y, right=charges_right, size=sz_row)
-            y += row_h
-        draw("Mastercard", y, x=x_desc, size=sz_row)
-        draw("1", y, right=qty_right, size=sz_row)
-        draw(CREDIT_TOTAL, y, right=credit_right, size=sz_row)
-        y += row_h * 0.8
-        draw("XXXXXXXXXXXX3724 XX/XX", y, x=x_desc, size=sz_row)
-        y += row_h * 1.2
-        y_totN = y
-        page.draw_line((T_left, y_totN - 9), (T_right, y_totN - 9), color=(0, 0, 0), width=0.7)
-        page.draw_rect(fitz.Rect(T_left, y_totN - 8, T_right, y_totN + 3), color=None, fill=grey)
-        page.draw_line((T_left, y_totN + 4), (T_right, y_totN + 4), color=(0, 0, 0), width=0.7)
-        draw("Total", y_totN, bold=bd_tot, x=x_date, size=sz_tot)
-        draw(CREDIT_TOTAL, y_totN, bold=bd_tot, right=charges_right, size=sz_tot)
-        draw(CREDIT_TOTAL, y_totN, bold=bd_tot, right=credit_right, size=sz_tot)
-        y_totN += row_h
-        draw("Balance GBP", y_totN, bold=bd_b, right=lb_bal, size=sz_b)
-        draw("0.00", y_totN, bold=bd_b, right=RE, size=sz_b)
-        delta = y_totN - y_bal
-
-        draw("Total Including VAT GBP", y_tiv + delta, bold=bd_b, right=lb_tiv, size=sz_b)
-        draw(CREDIT_TOTAL, y_tiv + delta, bold=bd_b, right=RE, size=sz_b)
-        draw("Net Amount GBP", y_net + delta, bold=bd_b, right=lb_net, size=sz_b)
-        draw(NET_TOTAL, y_net + delta, bold=bd_b, right=RE, size=sz_b)
-
-        yv = y_vb + delta
-        page.draw_rect(fitz.Rect(M_left2, yv - 7, M_right2, yv + 2), color=None, fill=grey)
-        draw("VAT Breakdown", yv, bold=bd_mini, x=x_vb2, size=sz_mini)
-        draw("Net Amount", yv, bold=bd_mini, x=x_na2, size=sz_mini)
-        draw("VAT", yv, bold=bd_mini, x=x_vat + dmini, size=sz_mini)
-        yv = y_v20 + delta
-        draw("VAT 20%", yv, bold=bd_mini, x=x_vb2, size=sz_mini)
-        draw(NET_TOTAL, yv, bold=bd_mini, right=na_right2, size=sz_mini)
-        draw(VAT_20, yv, bold=bd_mini, right=vat_right2, size=sz_mini)
-        yv = y_v4 + delta
-        draw("VAT 4%", yv, bold=bd_mini, x=x_vb2, size=sz_mini)
-        draw("0.00", yv, bold=bd_mini, right=na_right2, size=sz_mini)
-        draw("0.00", yv, bold=bd_mini, right=vat_right2, size=sz_mini)
-        yv = y_vtot + delta
-        page.draw_line((M_left2, yv - sz_mini - 1), (M_right2, yv - sz_mini - 1), color=(0, 0, 0), width=0.7)
-        draw("TOTAL GBP", yv, bold=bd_mini, x=x_vb2, size=sz_mini)
-        draw(VAT_20, yv, bold=bd_mini, right=vat_right2, size=sz_mini)
-        page.draw_line((M_left2, yv + 2), (M_right2, yv + 2), color=(0, 0, 0), width=0.7)
-
-        out_bytes = io.BytesIO()
-        doc.save(out_bytes)
-        doc.close()
-        st.success("Invoice Generated Successfully!")
-        st.download_button("📥 Download Amended PDF", out_bytes.getvalue(),
-                           file_name="Hotel_Invoice_amended.pdf", mime="application/pdf")
-    except Exception as e:
-        st.error(f"Error: {e}")
+        ys_sub = [s["origin"][1] for s in SP if s["bbox"][0] > 250 and y_bal +
