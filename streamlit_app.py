@@ -71,7 +71,7 @@ if st.button("Generate Invoice", type="primary"):
                     lab.append(s)
             lr = max([s["bbox"][2] for s in lab], default=None)
             vr = val["bbox"][2] if val else None
-            ref = lab[0] if lab else (val if val else None)
+            ref = lab[0] if lab else val
             sz = ref["size"] if ref else 9
             bd = ("Bold" in ref["font"]) if ref else False
             return lr, vr, sz, bd
@@ -130,6 +130,7 @@ if st.button("Generate Invoice", type="primary"):
         qty_right = span_at("1", y_row1)["bbox"][2]
         charges_right = span_at("53.10", y_row1)["bbox"][2]
         credit_right = span_at("53.10", y_mc)["bbox"][2]
+        RE = charges_right
         bal = find("Balance"); y_bal = bal["origin"][1]
         vb = find("VAT Breakdown"); y_vb = vb["origin"][1]; x_vb = vb["origin"][0]
         sz_mini = vb["size"]; bd_mini = "Bold" in vb["font"]
@@ -144,8 +145,8 @@ if st.button("Generate Invoice", type="primary"):
         tot = find("Total"); sz_tot = tot["size"]; bd_tot = "Bold" in tot["font"]
 
         lr_bal, vr_bal, sz_b, bd_b = split_row(y_bal)
-        y_tiv = min([s["origin"][1] for s in SP if s["bbox"][0] > 250 and y_bal + 4 < s["origin"][1] < y_vb])
-        y_net = max([s["origin"][1] for s in SP if s["bbox"][0] > 250 and y_bal + 4 < s["origin"][1] < y_vb])
+        ys_sub = [s["origin"][1] for s in SP if s["bbox"][0] > 250 and y_bal + 4 < s["origin"][1] < y_vb]
+        y_tiv = min(ys_sub); y_net = max(ys_sub)
         lr_tiv, vr_tiv, _, _ = split_row(y_tiv)
         lr_net, vr_net, _, _ = split_row(y_net)
 
@@ -153,6 +154,17 @@ if st.button("Generate Invoice", type="primary"):
         if T_left is None: T_left, T_right = x_date - 6, credit_right + 6
         M_left, M_right = grey_extent(y_vb - 7, y_vb - 4)
         if M_left is None: M_left, M_right = x_vb - 6, vat_right + 6
+
+        dmini = RE - vat_right
+        x_vb2 = x_vb + dmini
+        x_na2 = x_na + dmini
+        na_right2 = na_right + dmini
+        vat_right2 = RE
+        M_left2 = x_vb2 - (x_vb - M_left)
+        M_right2 = RE + 15
+        lb_bal = (lr_bal if lr_bal else RE - 46) + (RE - (vr_bal or RE))
+        lb_tiv = (lr_tiv if lr_tiv else RE - 46) + (RE - (vr_tiv or RE))
+        lb_net = (lr_net if lr_net else RE - 46) + (RE - (vr_net or RE))
 
         pix = page.get_pixmap(dpi=72, clip=fitz.Rect(x_vb, y_vb - 6, x_vb + 6, y_vb - 4))
         arrpx = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, pix.n)[:, :, :3]
@@ -191,33 +203,33 @@ if st.button("Generate Invoice", type="primary"):
         draw(CREDIT_TOTAL, y_totN, bold=bd_tot, right=charges_right, size=sz_tot)
         draw(CREDIT_TOTAL, y_totN, bold=bd_tot, right=credit_right, size=sz_tot)
         y_totN += row_h
-        draw("Balance GBP", y_totN, bold=bd_b, right=lr_bal, size=sz_b)
-        draw("0.00", y_totN, bold=bd_b, right=vr_bal, size=sz_b)
+        draw("Balance GBP", y_totN, bold=bd_b, right=lb_bal, size=sz_b)
+        draw("0.00", y_totN, bold=bd_b, right=RE, size=sz_b)
         delta = y_totN - y_bal
 
-        draw("Total Includin g VAT GBP", y_tiv + delta, bold=bd_b, right=lr_tiv, size=sz_b)
-        draw(CREDIT_TOTAL, y_tiv + delta, bold=bd_b, right=vr_tiv, size=sz_b)
-        draw("Net Amount GBP", y_net + delta, bold=bd_b, right=lr_net, size=sz_b)
-        draw(NET_TOTAL, y_net + delta, bold=bd_b, right=vr_net, size=sz_b)
+        draw("Total Including VAT GBP", y_tiv + delta, bold=bd_b, right=lb_tiv, size=sz_b)
+        draw(CREDIT_TOTAL, y_tiv + delta, bold=bd_b, right=RE, size=sz_b)
+        draw("Net Amount GBP", y_net + delta, bold=bd_b, right=lb_net, size=sz_b)
+        draw(NET_TOTAL, y_net + delta, bold=bd_b, right=RE, size=sz_b)
 
         yv = y_vb + delta
-        page.draw_rect(fitz.Rect(M_left, yv - 7, M_right, yv + 2), color=None, fill=grey)
-        draw("VAT Breakdown", yv, bold=bd_mini, x=x_vb, size=sz_mini)
-        draw("Net Amount", yv, bold=bd_mini, x=x_na, size=sz_mini)
-        draw("VAT", yv, bold=bd_mini, x=x_vat, size=sz_mini)
+        page.draw_rect(fitz.Rect(M_left2, yv - 7, M_right2, yv + 2), color=None, fill=grey)
+        draw("VAT Breakdown", yv, bold=bd_mini, x=x_vb2, size=sz_mini)
+        draw("Net Amount", yv, bold=bd_mini, x=x_na2, size=sz_mini)
+        draw("VAT", yv, bold=bd_mini, x=x_vat + dmini, size=sz_mini)
         yv = y_v20 + delta
-        draw("VAT 20%", yv, bold=bd_mini, x=x_vb, size=sz_mini)
-        draw(NET_TOTAL, yv, bold=bd_mini, right=na_right, size=sz_mini)
-        draw(VAT_20, yv, bold=bd_mini, right=vat_right, size=sz_mini)
+        draw("VAT 20%", yv, bold=bd_mini, x=x_vb2, size=sz_mini)
+        draw(NET_TOTAL, yv, bold=bd_mini, right=na_right2, size=sz_mini)
+        draw(VAT_20, yv, bold=bd_mini, right=vat_right2, size=sz_mini)
         yv = y_v4 + delta
-        draw("VAT 4%", yv, bold=bd_mini, x=x_vb, size=sz_mini)
-        draw("0.00", yv, bold=bd_mini, right=na_right, size=sz_mini)
-        draw("0.00", yv, bold=bd_mini, right=vat_right, size=sz_mini)
+        draw("VAT 4%", yv, bold=bd_mini, x=x_vb2, size=sz_mini)
+        draw("0.00", yv, bold=bd_mini, right=na_right2, size=sz_mini)
+        draw("0.00", yv, bold=bd_mini, right=vat_right2, size=sz_mini)
         yv = y_vtot + delta
-        page.draw_line((M_left, yv - sz_mini - 1), (M_right, yv - sz_mini - 1), color=(0, 0, 0), width=0.7)
-        draw("TOTAL GBP", yv, bold=bd_mini, x=x_vb, size=sz_mini)
-        draw(VAT_20, yv, bold=bd_mini, right=vat_right, size=sz_mini)
-        page.draw_line((M_left, yv + 2), (M_right, yv + 2), color=(0, 0, 0), width=0.7)
+        page.draw_line((M_left2, yv - sz_mini - 1), (M_right2, yv - sz_mini - 1), color=(0, 0, 0), width=0.7)
+        draw("TOTAL GBP", yv, bold=bd_mini, x=x_vb2, size=sz_mini)
+        draw(VAT_20, yv, bold=bd_mini, right=vat_right2, size=sz_mini)
+        page.draw_line((M_left2, yv + 2), (M_right2, yv + 2), color=(0, 0, 0), width=0.7)
 
         out_bytes = io.BytesIO()
         doc.save(out_bytes)
