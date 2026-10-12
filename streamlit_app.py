@@ -5,6 +5,7 @@ import io
 import re
 from datetime import datetime, timedelta
 
+grey = (0.92, 0.92, 0.92)
 APP_PASSWORD = ""  # Optionally set a password here
 
 st.set_page_config(page_title="Doc Amender", layout="centered")
