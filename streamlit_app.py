@@ -14,7 +14,7 @@ st.subheader(" test.pdf", type=["pdf"])
 
 st.subheader("2. Enter Details")
 c1, c2 = st.columns(2)
-name = c1.text2. Enter Details")
+name = c1.text_input("Guest Name", "Mr. Luke Moore")
 c1, c2 =_input("Guest Name", "Mr. Luke Moore")
  st.columns(2)
 name = c1.text_input("Guest Name", "Mr. Luke Moore")
