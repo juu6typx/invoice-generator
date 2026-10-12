@@ -1,119 +1,155 @@
 import streamlit as st
 import fitz
 import numpy as np
-from datetime import datetime, timedelta
 import io
+import re
+from datetime import datetime, timedelta
 
-st.set_page_config(page_title="Invoice Gen", layout="centered")
-st.title("🏨 Hotel Invoice 1:1 Generator")
+APP_PASSWORD = ""  # Optionally set a password here
 
-uploaded_file = st.file_uploader("1. Upload your base test.pdf", type=["pdf"])
+st.set_page_config(page_title="Doc Amender", layout="centered")
+if APP_PASSWORD:
+    if st.text_input("Password", type="password") != APP_PASSWORD:
+        st.stop()
 
-st.subheader("2. Enter Details")
+st.title("📄 Document Amender — 1:1 Invoice Clone")
+up = st.file_uploader("1. Upload base invoice PDF", type=["pdf"])
+
+st.subheader("2. Invoice type & variables")
+tpl = st.selectbox("Template", ["Ibis / Accor", "Custom labels"])
+
+if tpl == "Ibis / Accor":
+    L = dict(guest="Guest Name", ino="Invoice No.", idate="Date", arr="Arrival", dep="Departure",
+             dhdr="Date", desch="Description", qtyh="Qty.", chgh="Charges", crh="Credit",
+             total="Total", bal="Balance", vatb="VAT Breakdown", v20="VAT 20%", v4="VAT 4%",
+             tvat="TOTAL GBP", pay="Mastercard")
+else:
+    c3, c4 = st.columns(2)
+    L = dict(guest=c3.text_input("Guest label", "Guest Name"), ino=c4.text_input("Invoice No. label", "Invoice No."),
+             idate=c3.text_input("Invoice date label", "Date"), arr=c4.text_input("Arrival label", "Arrival"),
+             dep=c3.text_input("Departure label", "Departure"), dhdr=c4.text_input("Date header", "Date"),
+             desch=c3.text_input("Description header", "Description"), qtyh=c4.text_input("Qty header", "Qty."),
+             chgh=c3.text_input("Charges header", "Charges"), crh=c4.text_input("Credit header", "Credit"),
+             total=c3.text_input("Total label", "Total"), bal=c4.text_input("Balance label", "Balance"),
+             vatb=c3.text_input("VAT block header", "VAT Breakdown"), v20=c4.text_input("VAT main row", "VAT 20%"),
+             v4=c3.text_input("VAT 2nd row", "VAT 4%"), tvat=c4.text_input("VAT total row", "TOTAL GBP"),
+             pay=c4.text_input("Payment keyword", "Mastercard"))
+
 c1, c2 = st.columns(2)
 name = c1.text_input("Guest Name", "Mr. Luke Moore")
-a1 = c1.text_input("Address line 1", "438 Airpoint")
-a2 = c1.text_input("Address line 2", "Skypark Road")
-a3 = c1.text_input("Address line 3", "Bristol")
-a4 = c1.text_input("Address line 4", "BS3 3NL")
-ino = c2.text_input("Invoice No.", "26683")
+addr = c1.text_area("Address (one line per line)", "438 Airpoint\nSkypark Road\nBristol\nBS3 3NL")
+ino = c2.text_input("Invoice No. (blank = keep)", "")
+ref = c2.text_input("Reference No. (11 digits, blank = keep)", "")
 inv = c2.text_input("Invoice Date", "02.09.2026")
 arr = c2.text_input("Arrival", "28.08.2026")
 dep = c2.text_input("Departure", "02.09.2026")
 chg = c2.text_input("Nightly Charge", "134.56")
+dsc = c2.text_input("Row description", "Accommodation")
+
+c5, c6, c7 = st.columns(3)
+fmt_meta = c5.selectbox("Meta date format", ["DD.MM.YYYY", "DD/MM/YYYY", "YYYY-MM-DD"])
+fmt_row = c6.selectbox("Row date format", ["DD.MM.YY", "DD/MM/YY", "YYYY-MM-DD"])
+vat_rate = c7.number_input("VAT %", 0.0, 50.0, 20.0)
+
+MF = {"DD.MM.YYYY": "%d.%m.%Y", "DD/MM/YYYY": "%d/%m/%Y", "YYYY-MM-DD": "%Y-%m-%d"}
+RF = {"DD.MM.YY": "%d.%m.%y", "DD/MM/YY": "%d/%m/%y", "YYYY-MM-DD": "%Y-%m-%d"}
+DR = {"DD.MM.YYYY": r"^\d{2}\.\d{2}\.\d{4}$", "DD/MM/YYYY": r"^\d{2}/\d{2}/\d{4}$", "YYYY-MM-DD": r"^\d{4}-\d{2}-\d{2}$"}[fmt_meta]
+NR = r"^[\d.,]+$"
 
 if st.button("Generate Invoice", type="primary"):
-    if not uploaded_file:
-        st.error("Please upload the base PDF first!")
-        st.stop()
+    if not up:
+        st.error("Upload the base PDF first!"); st.stop()
     try:
-        CHARGE_F = float(chg)
-        _a = datetime.strptime(arr, "%d.%m.%Y")
-        _d = datetime.strptime(dep, "%d.%m.%Y")
-        _nights = max((_d - _a).days, 1)
-        ROW_DATES = [(_a + timedelta(days=i)).strftime("%d.%m.%y") for i in range(_nights)]
-        CHARGE = "%.2f" % CHARGE_F
-        CREDIT_TOTAL = "%.2f" % (CHARGE_F * _nights)
-        NET_TOTAL = "%.2f" % round(CHARGE_F * _nights / 1.2, 2)
-        VAT_20 = "%.2f" % round(CHARGE_F * _nights - CHARGE_F * _nights / 1.2, 2)
-
-        doc = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-        page = doc[0]
+        CF = float(chg)
+        A = datetime.strptime(arr, MF[fmt_meta]); D = datetime.strptime(dep, MF[fmt_meta])
+        N = max((D - A).days, 1)
+        ROWS = [(A + timedelta(days=i)).strftime(RF[fmt_row]) for i in range(N)]
+        CH = "%.2f" % CF; GROSS = CF * N
+        TOTC = "%.2f" % GROSS
+        NET = "%.2f" % round(GROSS / (1 + vat_rate / 100.0), 2)
+        VAT = "%.2f" % round(GROSS - round(GROSS / (1 + vat_rate / 100.0), 2), 2)
+        
+        doc = fitz.open(stream=up.read(), filetype="pdf"); page = doc[0]
         SP = [s for b in page.get_text("dict")["blocks"] if b.get("type") == 0 for l in b["lines"] for s in l["spans"]]
 
-        def find(old, x_min=None, x_max=None):
-            c = [s for s in SP if s["text"].strip() == old]
-            if not c: c = [s for s in SP if s["text"].strip().startswith(old)]
-            if not c: c = [s for s in SP if old.lower() in s["text"].lower()]
-            if x_min is not None: c = [s for s in c if s["bbox"][0] >= x_min]
-            if x_max is not None: c = [s for s in c if s["bbox"][0] <= x_max]
+        def find(t):
+            c = [s for s in SP if s["text"].strip() == t]
+            if not c: c = [s for s in SP if s["text"].strip().startswith(t)]
+            if not c: c = [s for s in SP if t.lower() in s["text"].lower()]
             return c[0] if c else None
 
-        def span_near(text, y, dx=4):
-            c = [s for s in SP if s["text"].strip() == text and abs(s["origin"][1] - y) < dx]
-            if not c: c = [s for s in SP if s["text"].strip().startswith(text) and abs(s["origin"][1] - y) < dx]
-            return c[0] if c else None
+        def lab_val(label, pat=None):
+            for lab in [s for s in SP if s["text"].strip() == label or s["text"].strip().startswith(label)]:
+                vs = [s for s in SP if s is not lab and abs(s["origin"][1] - lab["origin"][1]) < 3 and s["bbox"][0] >= lab["bbox"][2] - 2]
+                if vs:
+                    v = sorted(vs, key=lambda s: s["bbox"][0])[0]
+                    if pat is None or re.match(pat, v["text"].strip()): return lab, v
+            return None, None
 
-        def span_at(text, y, dx=6):
-            c = [s for s in SP if s["text"].strip() == text and abs(s["origin"][1] - y) < dx]
-            return c[0] if c else None
+        def nums_at(y, dx=3):
+            return sorted([s for s in SP if abs(s["origin"][1] - y) < dx and re.match(NR, s["text"].strip())], key=lambda s: s["bbox"][0])
 
-        def split_row(y):
-            rs = [s for s in SP if abs(s["origin"][1] - y) < 3 and s["bbox"][0] > 250]
-            val = None; lab = []
-            for s in rs:
-                t = s["text"].strip()
-                if val is None and t and all(c in "0123456789.," for c in t):
-                    val = s
-                else:
-                    lab.append(s)
-            lr = max([s["bbox"][2] for s in lab], default=None)
-            vr = val["bbox"][2] if val else None
-            ref = lab[0] if lab else val
-            return lr, vr, (ref["size"] if ref else 9), ("Bold" in ref["font"] if ref else False)
+        def labs_at(y, dx=3):
+            return sorted([s for s in SP if abs(s["origin"][1] - y) < dx and not re.match(NR, s["text"].strip())], key=lambda s: s["bbox"][0])
 
         def grey_extent(y0, y1):
             pix = page.get_pixmap(dpi=72, clip=fitz.Rect(0, y0, page.rect.width, y1))
             a = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, pix.n)[:, :, :3].mean(axis=2)
-            m = (a > 150) & (a < 235)
-            cols = np.nonzero(m.any(axis=0))[0]
-            if len(cols) == 0: return None, None
-            return float(cols.min()), float(cols.max() + 1)
+            cols = np.nonzero(((a > 150) & (a < 235)).any(axis=0))[0]
+            return (float(cols.min()), float(cols.max() + 1)) if len(cols) else (None, None)
 
-        NAMES = [(s["origin"][0], s["origin"][1], s["size"], "Bold" in s["font"]) for s in SP if "Luke Moore" in s["text"] and "Guest" not in s["text"]]
-        addr = find("airpoint") or find("skypark") or find("733")
-        brl = find("Bristol"); gb = find("Great Britain")
-        s_d = find("27.03.2026", x_min=300); s_dp = find("27.03.2026", x_max=300); s_ar = find("26.03.2026")
-        s_in = find("26683")
-        row1 = find("26.03.26")
-        y_row1 = row1["origin"][1]; x_date = row1["origin"][0]; sz_row = row1["size"]
-        x_desc = find("Accommodation")["origin"][0]
-        mc = find("Mastercard"); y_mc = mc["origin"][1]
-        row_h = y_mc - y_row1
-        hdr = {l: find(l) for l in ("Description", "Qty.", "Charges", "Credit")}
-        hdr["Date"] = min([s for s in SP if s["text"].strip() == "Date"], key=lambda s: abs(s["origin"][1] - (y_row1 - 10)))
-        y_hdr = hdr["Date"]["origin"][1]; sz_hdr = hdr["Date"]["size"]; bd_hdr = "Bold" in hdr["Date"]["font"]
-        qty_right = span_at("1", y_row1)["bbox"][2]
-        charges_right = span_at("53.10", y_row1)["bbox"][2]
-        credit_right = span_at("53.10", y_mc)["bbox"][2]
+        _, v_name = lab_val(L["guest"]); g_old = v_name["text"].strip() if v_name else name
+        _, v_ino = lab_val(L["ino"], r"^[\w/-]+$")
+        _, v_dat = lab_val(L["idate"], DR); _, v_arr = lab_val(L["arr"], DR); _, v_dep = lab_val(L["dep"], DR)
+        
+        # Find 11-digit reference number
+        v_ref = None; ref_old = ""
+        if ref:
+            ref_candidates = [s for s in SP if re.match(r"^\d{11}$", s["text"].strip())]
+            if ref_candidates:
+                top_candidates = [s for s in ref_candidates if s["origin"][1] < (find(L["desch"])["origin"][1] if find(L["desch"]) else 300)]
+                v_ref = sorted(top_candidates if top_candidates else ref_candidates, key=lambda s: s["origin"][1])[0]
+                ref_old = v_ref["text"].strip()
+
+        y_hdr = find(L["desch"])["origin"][1]
+        hdr = {s["text"].strip(): s for s in SP if abs(s["origin"][1] - y_hdr) < 3 and s["text"].strip() in (L["dhdr"], L["desch"], L["qtyh"], L["chgh"], L["crh"])}
+        sz_hdr = hdr[L["desch"]]["size"]; bd_hdr = "Bold" in hdr[L["desch"]]["font"]
+        tot_s = min([s for s in SP if s["text"].strip() == L["total"] and s["origin"][1] > y_hdr], key=lambda s: s["origin"][1])
+        y_tot = tot_s["origin"][1]; sz_tot = tot_s["size"]; bd_tot = "Bold" in tot_s["font"]
+        
+        gy = sorted(set(round(s["origin"][1]) for s in SP if y_hdr + 4 < s["origin"][1] < y_tot - 4))
+        groups = []
+        for y in gy:
+            if groups and y - groups[-1][-1] <= 3: groups[-1].append(y)
+            else: groups.append([y])
+        row_ys = [sum(g) / len(g) for g in groups]
+        r1 = row_ys[0]
+        payy = next((y for y in row_ys if any((L["pay"].lower() in s["text"].lower() or "XXXX" in s["text"]) for s in SP if abs(s["origin"][1] - y) < 4)), None)
+        row_h = (payy - r1) if payy else (row_ys[1] - r1 if len(row_ys) > 1 else 12.0)
+        r1n = nums_at(r1)
+        qn = [s for s in r1n if s["bbox"][0] < hdr[L["chgh"]]["bbox"][0]]
+        qty_right = qn[-1]["bbox"][2] if qn else hdr[L["qtyh"]]["bbox"][2]
+        charges_right = r1n[-1]["bbox"][2]
+        sz_row = [s for s in SP if abs(s["origin"][1] - r1) < 3][0]["size"]
+        x_date = min(s["bbox"][0] for s in SP if abs(s["origin"][1] - r1) < 3)
+        x_desc = hdr[L["desch"]]["origin"][0]
+        pay_txt = [s["text"] for s in labs_at(payy)] if payy else [L["pay"]]
+        if payy and labs_at(payy + row_h * 0.8): pay_txt += [s["text"] for s in labs_at(payy + row_h * 0.8)]
+        credit_right = nums_at(payy)[-1]["bbox"][2] if payy and nums_at(payy) else charges_right + 80
+        
+        bal_s = find(L["bal"]); y_bal = bal_s["origin"][1]
+        band_s = find(L["vatb"]); y_vb = band_s["origin"][1]
+        sz_mini = band_s["size"]; bd_mini = "Bold" in band_s["font"]
+        x_vb = band_s["origin"][0]
+        x_na = next((s["origin"][0] for s in SP if s["text"].strip() == "Net Amount" and abs(s["origin"][1] - y_vb) < 3), x_vb)
+        x_vat = next((s["origin"][0] for s in SP if s["text"].strip() == "VAT" and abs(s["origin"][1] - y_vb) < 3), x_vb)
+        sub_ys = sorted(set(round(s["origin"][1]) for s in SP if s["bbox"][0] > 250 and y_bal - 3 <= s["origin"][1] < y_vb - 4))
+        y_tiv = sub_ys[1] if len(sub_ys) > 2 else y_bal + 12
+        y_net = sub_ys[2] if len(sub_ys) > 2 else y_bal + 24
+        y_v20 = find(L["v20"])["origin"][1]; y_v4 = find(L["v4"])["origin"][1]; y_vtot = find(L["tvat"])["origin"][1]
+        n20 = nums_at(y_v20); na_right = n20[0]["bbox"][2]; vat_right = n20[-1]["bbox"][2]
         RE = charges_right
-        bal = find("Balance"); y_bal = bal["origin"][1]
-        vb = find("VAT Breakdown"); y_vb = vb["origin"][1]; x_vb = vb["origin"][0]
-        sz_mini = vb["size"]; bd_mini = "Bold" in vb["font"]
-        x_na = (span_near("Net Amount", y_vb) or vb)["origin"][0]
-        x_vat = (span_near("VAT", y_vb) or vb)["origin"][0]
-        y_v20 = find("VAT 20%")["origin"][1]
-        y_v4 = find("VAT 4%")["origin"][1]
-        y_vtot = find("TOTAL GBP")["origin"][1]
-        na_right = span_at("44.25", y_v20)["bbox"][2]
-        vat_right = span_at("8.85", y_v20)["bbox"][2]
-        tot = find("Total"); sz_tot = tot["size"]; bd_tot = "Bold" in tot["font"]
-        lr_bal, vr_bal, sz_b, bd_b = split_row(y_bal)
-        ys_sub = [s["origin"][1] for s in SP if s["bbox"][0] > 250 and y_bal + 4 < s["origin"][1] < y_vb]
-        if len(ys_sub) < 2: ys_sub = [y_bal + 12, y_bal + 24]
-        y_tiv = min(ys_sub); y_net = max(ys_sub)
-        lr_tiv, vr_tiv, _, _ = split_row(y_tiv)
-        lr_net, vr_net, _, _ = split_row(y_net)
+        
         T_left, T_right = grey_extent(y_hdr - 1, y_hdr + 3)
         if T_left is None: T_left, T_right = x_date - 6, credit_right + 6
         M_left, M_right = grey_extent(y_vb - 7, y_vb - 4)
@@ -122,109 +158,129 @@ if st.button("Generate Invoice", type="primary"):
         x_vb2 = x_vb + dmini; x_na2 = x_na + dmini; x_vat2 = x_vat + dmini
         na_right2 = na_right + dmini; vat_right2 = RE
         M_left2 = x_vb2 - (x_vb - M_left); M_right2 = RE + 15
-        lb_bal = (lr_bal or RE - 46) + (RE - (vr_bal or RE))
-        lb_tiv = (lr_tiv or RE - 46) + (RE - (vr_tiv or RE))
-        lb_net = (lr_net or RE - 46) + (RE - (vr_net or RE))
-        pix = page.get_pixmap(dpi=72, clip=fitz.Rect(x_vb, y_vb - 6, x_vb + 6, y_vb - 4))
-        ap = np.frombuffer(pix.samples, np.uint8).reshape(pix.height, pix.width, pix.n)[:, :, :3]
-        grey = tuple(round(float(v), 3) for v in np.median(ap.reshape(-1, 3), axis=0) / 255.0)
-        gsp = [s for s in SP if "The hotel," in s["text"]]
-        gdpr_top = gsp[0]["bbox"][1] if gsp else 10 ** 4
-        bottom = min(y_vtot + 8, gdpr_top - 4)
-
+        
+        def lr_vr(y):
+            ls = labs_at(y); ns = nums_at(y)
+            return (max(s["bbox"][2] for s in ls) if ls else RE - 46), (ns[-1]["bbox"][2] if ns else RE), (ls[0]["size"] if ls else 9), ("Bold" in ls[0]["font"] if ls else False)
+        lb_bal, vr_bal, sz_b, bd_b = lr_vr(y_bal)
+        lb_tiv, vr_tiv, _, _ = lr_vr(y_tiv)
+        lb_net, vr_net, _, _ = lr_vr(y_net)
+        
         RED = []
-        for (nx, ny, ns, nb) in NAMES:
-            RED.append(fitz.Rect(nx - 2, ny - ns, nx + 130, ny + 4))
-        if addr:
-            g = (brl["origin"][1] - addr["origin"][1]) if brl else 11.0
-            ax0 = addr["bbox"][0]
-            ax1 = max(addr["bbox"][2], brl["bbox"][2] if brl else 0, gb["bbox"][2] if gb else 0) + 2
-            RED.append(fitz.Rect(ax0 - 2, addr["origin"][1] - 10, ax1, addr["origin"][1] + 3 * g + 4))
-        for s in (s_d, s_dp, s_ar):
-            if s: RED.append(fitz.Rect(s["bbox"]) + (-1.5, -1.5, 1.5, 1.5))
-        if s_in and ino != "26683":
-            RED.append(fitz.Rect(s_in["bbox"]) + (-1.5, -1.5, 1.5, 1.5))
+        for s in [q for q in SP if q["text"].strip() == g_old]:
+            RED.append(fitz.Rect(s["bbox"]) + (-2, -2, 2, 2))
+        
+        blk = sorted([s for s in SP if s["bbox"][0] < 250 and s["origin"][1] < y_hdr - 30], key=lambda s: s["origin"][1])
+        if blk:
+            g = (blk[1]["origin"][1] - blk[0]["origin"][1]) if len(blk) > 1 else 11.0
+            ax0 = blk[0]["bbox"][0]
+            ax1 = max(s["bbox"][2] for s in blk) + 2
+            RED.append(fitz.Rect(ax0 - 2, blk[0]["origin"][1] - 10, ax1, blk[0]["origin"][1] + (len(addr.split(chr(10))) + 1) * g + 4))
+            
+        for v in (v_ino, v_dat, v_arr, v_dep, v_ref):
+            if v: RED.append(fitz.Rect(v["bbox"]) + (-1.5, -1.5, 1.5, 1.5))
+            
+        gdpr_top = next((s["bbox"][1] for s in SP if "The hotel," in s["text"]), 10**4)
+        bottom = min(y_vtot + 8, gdpr_top - 4)
         RED.append(fitz.Rect(0, y_hdr - 12, page.rect.width, bottom))
+        
         for r in RED:
             page.add_redact_annot(r, fill=(1, 1, 1))
         page.apply_redactions(images=fitz.PDF_REDACT_IMAGE_NONE)
 
         def draw(text, y, bold=False, x=None, right=None, size=9):
-            fname = "hebo" if bold else "helv"
-            f = fitz.Font(fname)
-            w = f.text_length(text, fontsize=size)
-            xx = (right - w) if right is not None else x
-            page.insert_text((xx, y), text, fontname=fname, fontsize=size, color=(0, 0, 0))
+            fn = "hebo" if bold else "helv"
+            w = fitz.Font(fn).text_length(text, fontsize=size)
+            page.insert_text(((right - w) if right is not None else x, y), text, fontname=fn, fontsize=size, color=(0, 0, 0))
 
-        for (nx, ny, ns, nb) in NAMES:
-            draw(name, ny, bold=nb, x=nx, size=ns)
-        if addr:
-            draw(a1, addr["origin"][1], x=ax0, size=addr["size"])
-            draw(a2, addr["origin"][1] + g, x=ax0, size=addr["size"])
-            draw(a3, addr["origin"][1] + 2 * g, x=ax0, size=addr["size"])
-            draw(a4, addr["origin"][1] + 3 * g, x=ax0, size=addr["size"])
-        if s_d: draw(inv, s_d["origin"][1], x=s_d["origin"][0], size=s_d["size"])
-        if s_dp: draw(dep, s_dp["origin"][1], x=s_dp["origin"][0], size=s_dp["size"])
-        if s_ar: draw(arr, s_ar["origin"][1], x=s_ar["origin"][0], size=s_ar["size"])
-        if s_in and ino != "26683": draw(ino, s_in["origin"][1], x=s_in["origin"][0], size=s_in["size"])
-
+        for s in [q for q in SP if q["text"].strip() == g_old]:
+            draw(name, s["origin"][1], bold=("Bold" in s["font"]), x=s["origin"][0], size=s["size"])
+        if blk:
+            lines = [name] + addr.split(chr(10))
+            for i, ln in enumerate(lines):
+                draw(ln, blk[0]["origin"][1] + i * g, x=ax0, size=blk[0]["size"])
+        if v_ino and ino: draw(ino, v_ino["origin"][1], x=v_ino["origin"][0], size=v_ino["size"])
+        if v_ref and ref: draw(ref, v_ref["origin"][1], x=v_ref["origin"][0], size=v_ref["size"])
+        if v_dat: draw(inv, v_dat["origin"][1], x=v_dat["origin"][0], size=v_dat["size"])
+        if v_arr: draw(arr, v_arr["origin"][1], x=v_arr["origin"][0], size=v_arr["size"])
+        if v_dep: draw(dep, v_dep["origin"][1], x=v_dep["origin"][0], size=v_dep["size"])
+        
         y = y_hdr
         page.draw_rect(fitz.Rect(T_left, y - 8, T_right, y + 3), color=None, fill=grey)
         page.draw_line((T_left, y - 9), (T_right, y - 9), color=(0, 0, 0), width=0.7)
         page.draw_line((T_left, y + 4), (T_right, y + 4), color=(0, 0, 0), width=0.7)
-        for label in ("Date", "Description", "Qty.", "Charges", "Credit"):
-            draw(label, y, bold=bd_hdr, x=hdr[label]["origin"][0], size=sz_hdr)
+        for lb in (L["dhdr"], L["desch"], L["qtyh"], L["chgh"], L["crh"]):
+            draw(lb, y, bold=bd_hdr, x=hdr[lb]["origin"][0], size=sz_hdr)
+            
         y += row_h
-        for dte in ROW_DATES:
+        for dte in ROWS:
             draw(dte, y, x=x_date, size=sz_row)
-            draw("Accommodation", y, x=x_desc, size=sz_row)
+            draw(dsc, y, x=x_desc, size=sz_row)
             draw("1", y, right=qty_right, size=sz_row)
-            draw(CHARGE, y, right=charges_right, size=sz_row)
+            draw(CH, y, right=charges_right, size=sz_row)
             y += row_h
-        draw("Mastercard", y, x=x_desc, size=sz_row)
+            
+        for i, pt in enumerate(pay_txt):
+            draw(pt, y + i * row_h * 0.8, x=x_desc, size=sz_row)
         draw("1", y, right=qty_right, size=sz_row)
-        draw(CREDIT_TOTAL, y, right=credit_right, size=sz_row)
-        y += row_h * 0.8
-        draw("XXXXXXXXXXXX3724 XX/XX", y, x=x_desc, size=sz_row)
-        y += row_h * 1.2
+        draw(TOTC, y, right=credit_right, size=sz_row)
+        y += row_h * 0.8 * max(len(pay_txt), 1) + row_h * 0.4
+        
         yT = y
         page.draw_line((T_left, yT - 9), (T_right, yT - 9), color=(0, 0, 0), width=0.7)
         page.draw_rect(fitz.Rect(T_left, yT - 8, T_right, yT + 3), color=None, fill=grey)
         page.draw_line((T_left, yT + 4), (T_right, yT + 4), color=(0, 0, 0), width=0.7)
-        draw("Total", yT, bold=bd_tot, x=x_date, size=sz_tot)
-        draw(CREDIT_TOTAL, yT, bold=bd_tot, right=charges_right, size=sz_tot)
-        draw(CREDIT_TOTAL, yT, bold=bd_tot, right=credit_right, size=sz_tot)
+        draw(tot_s["text"], yT, bold=bd_tot, x=tot_s["origin"][0], size=sz_tot)
+        draw(TOTC, yT, bold=bd_tot, right=charges_right, size=sz_tot)
+        draw(TOTC, yT, bold=bd_tot, right=credit_right, size=sz_tot)
         yT += row_h
-        draw("Balance GBP", yT, bold=bd_b, right=lb_bal, size=sz_b)
+        
+        draw("".join(s["text"] for s in labs_at(y_bal)), yT, bold=bd_b, right=lb_bal, size=sz_b)
         draw("0.00", yT, bold=bd_b, right=RE, size=sz_b)
         delta = yT - y_bal
-        draw("Total Including VAT GBP", y_tiv + delta, bold=bd_b, right=lb_tiv, size=sz_b)
-        draw(CREDIT_TOTAL, y_tiv + delta, bold=bd_b, right=RE, size=sz_b)
-        draw("Net Amount GBP", y_net + delta, bold=bd_b, right=lb_net, size=sz_b)
-        draw(NET_TOTAL, y_net + delta, bold=bd_b, right=RE, size=sz_b)
+        draw("".join(s["text"] for s in labs_at(y_tiv)).replace("Includin g", "Including"), y_tiv + delta, bold=bd_b, right=lb_tiv, size=sz_b)
+        draw(TOTC, y_tiv + delta, bold=bd_b, right=RE, size=sz_b)
+        draw("".join(s["text"] for s in labs_at(y_net)), y_net + delta, bold=bd_b, right=lb_net, size=sz_b)
+        draw(NET, y_net + delta, bold=bd_b, right=RE, size=sz_b)
+        
         yv = y_vb + delta
         page.draw_rect(fitz.Rect(M_left2, yv - 7, M_right2, yv + 2), color=None, fill=grey)
-        draw("VAT Breakdown", yv, bold=bd_mini, x=x_vb2, size=sz_mini)
+        draw(L["vatb"], yv, bold=bd_mini, x=x_vb2, size=sz_mini)
         draw("Net Amount", yv, bold=bd_mini, x=x_na2, size=sz_mini)
         draw("VAT", yv, bold=bd_mini, x=x_vat2, size=sz_mini)
+        
         yv = y_v20 + delta
-        draw("VAT 20%", yv, bold=bd_mini, x=x_vb2, size=sz_mini)
-        draw(NET_TOTAL, yv, bold=bd_mini, right=na_right2, size=sz_mini)
-        draw(VAT_20, yv, bold=bd_mini, right=vat_right2, size=sz_mini)
+        draw(L["v20"], yv, bold=bd_mini, x=x_vb2, size=sz_mini)
+        draw(NET, yv, bold=bd_mini, right=na_right2, size=sz_mini)
+        draw(VAT, yv, bold=bd_mini, right=vat_right2, size=sz_mini)
+        
         yv = y_v4 + delta
-        draw("VAT 4%", yv, bold=bd_mini, x=x_vb2, size=sz_mini)
+        draw(L["v4"], yv, bold=bd_mini, x=x_vb2, size=sz_mini)
         draw("0.00", yv, bold=bd_mini, right=na_right2, size=sz_mini)
         draw("0.00", yv, bold=bd_mini, right=vat_right2, size=sz_mini)
+        
         yv = y_vtot + delta
         page.draw_line((M_left2, yv - sz_mini - 1), (M_right2, yv - sz_mini - 1), color=(0, 0, 0), width=0.7)
-        draw("TOTAL GBP", yv, bold=bd_mini, x=x_vb2, size=sz_mini)
-        draw(VAT_20, yv, bold=bd_mini, right=vat_right2, size=sz_mini)
+        draw(L["tvat"], yv, bold=bd_mini, x=x_vb2, size=sz_mini)
+        draw(VAT, yv, bold=bd_mini, right=vat_right2, size=sz_mini)
         page.draw_line((M_left2, yv + 2), (M_right2, yv + 2), color=(0, 0, 0), width=0.7)
-
-        out = io.BytesIO()
-        doc.save(out)
-        doc.close()
+        
+        out = io.BytesIO(); doc.save(out)
+        out.seek(0)
+        chk = fitz.open(stream=out.read(), filetype="pdf")
+        txt = chk[0].get_text(); chk.close(); doc.close()
+        
+        GHOSTS = [g_old, ref_old] + [v["text"].strip() for v in (v_ino, v_dat, v_arr, v_dep) if v] + [r1n[-1]["text"].strip()] + [s["text"].strip() for s in nums_at(y_tot)] + [s["text"].strip() for s in nums_at(y_bal)] + [s["text"].strip() for s in nums_at(y_tiv)] + [s["text"].strip() for s in nums_at(y_net)] + [s["text"].strip() for s in n20]
+        NEWVALS = [name, inv, arr, dep, ino, ref, CH, TOTC, NET, VAT] + ROWS + addr.split(chr(10))
+        ghosts = sorted(set(t for t in GHOSTS if t and len(t) > 1 and t in txt and t not in NEWVALS))
+        
+        if ghosts:
+            st.warning("⚠️ Hidden-text leftovers: " + ", ".join(ghosts))
+        else:
+            st.success("✅ Hidden-text check passed: original values fully deleted.")
+            
         st.success("Invoice Generated Successfully!")
-        st.download_button("📥 Download Amended PDF", out.getvalue(), file_name="Hotel_Invoice_amended.pdf", mime="application/pdf")
+        st.download_button("📥 Download Amended PDF", out.getvalue(), file_name="Invoice_amended.pdf", mime="application/pdf")
+        
     except Exception as e:
         st.error(f"Error: {e}")
